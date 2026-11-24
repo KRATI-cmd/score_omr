@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="en"><head>
+<title>OMR Scorer</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  /* Layout: single narrow column built for a phone held over a sheet; key on top, grade form, then result, then saved students. */
+  :root {
+    --bg: #F2F5F7; --surface: #FFFFFF; --ink: #16222C; --muted: #5B6B78; --line: #D5DDE3;
+    --accent: #0B5D6B; --accent-ink: #FFFFFF;
+    --ok: #17703A; --ok-bg: #E1F3E7; --bad: #B3261E; --bad-bg: #FBE4E2;
+    --warn: #8A5A00; --warn-bg: #FCEFD0; --idle: #55636F; --idle-bg: #E6EBEF;
+    --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-head: "Space Grotesk", "Inter", system-ui, sans-serif;
+    --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0F161C; --surface: #17212A; --ink: #E7EEF3; --muted: #93A3B0; --line: #2B3943;
+      --accent: #5CC3D1; --accent-ink: #04262C;
+      --ok: #6FD596; --ok-bg: #153424; --bad: #FF9A92; --bad-bg: #3C1A18;
+      --warn: #F2C25C; --warn-bg: #3A2D0E; --idle: #A9B6C1; --idle-bg: #232F38;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F161C; --surface: #17212A; --ink: #E7EEF3; --muted: #93A3B0; --line: #2B3943;
+    --accent: #5CC3D1; --accent-ink: #04262C;
+    --ok: #6FD596; --ok-bg: #153424; --bad: #FF9A92; --bad-bg: #3C1A18;
+    --warn: #F2C25C; --warn-bg: #3A2D0E; --idle: #A9B6C1; --idle-bg: #232F38;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.45;
+    padding-block: 20px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  main { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  h1, h2 { font-family: var(--font-head); margin: 0; text-wrap: balance; }
+  h1 { font-size: 26px; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; }
+  p { margin: 0; }
+  .sub { color: var(--muted); font-size: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  label, .label { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  input[type=text], textarea, select {
+    font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; width: 100%;
+  }
+  textarea { font-family: var(--font-data); font-size: 14px; letter-spacing: 0.12em; resize: vertical; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button {
+    font: inherit; font-weight: 600; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+    padding: 11px 14px; min-height: 44px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 140px; }
+  details.card > summary { cursor: pointer; font-family: var(--font-head); font-weight: 600; font-size: 16px; list-style: none; display: flex; justify-content: space-between; gap: 8px; }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary span { font-family: var(--font-body); font-weight: 400; font-size: 13px; color: var(--muted); }
+  details.card[open] > summary { margin-bottom: 4px; }
+  .msg { font-size: 13px; color: var(--muted); }
+  .msg.err { color: var(--bad); }
+  .thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+  .thumb { position: relative; width: 84px; height: 84px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--idle-bg); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb button { position: absolute; top: 2px; right: 2px; min-height: 28px; width: 28px; padding: 0; border-radius: 14px; line-height: 1; background: var(--surface); }
+  .score { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .score strong { font-family: var(--font-head); font-size: 44px; line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .score span { color: var(--muted); font-size: 18px; font-variant-numeric: tabular-nums; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { min-height: 36px; padding: 6px 10px; font-size: 13px; font-weight: 500; border-radius: 18px; display: inline-flex; gap: 6px; align-items: center; }
+  .chip b { font-variant-numeric: tabular-nums; }
+  .chip[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .chip.ok { background: var(--ok-bg); color: var(--ok); }
+  .chip.bad { background: var(--bad-bg); color: var(--bad); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
+  .chip.idle { background: var(--idle-bg); color: var(--idle); }
+  .chip.all { background: var(--surface); color: var(--ink); }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--bg); position: sticky; top: 0; }
+  tr:last-child td { border-bottom: 0; }
+  td.mono { font-family: var(--font-data); font-weight: 600; }
+  td.num { text-align: right; }
+  td select { padding: 4px 6px; min-height: 32px; width: auto; font-family: var(--font-data); font-size: 14px; }
+  tr.s-check td { background: var(--warn-bg); }
+  .pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; display: inline-block; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.idle { background: var(--idle-bg); color: var(--idle); }
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .student { display: flex; gap: 8px; align-items: stretch; }
+  .student > button.open { flex: 1; min-width: 0; text-align: left; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .student > button.open span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .student > button.open[aria-current="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .student .del { flex: 0 0 auto; color: var(--bad); }
+  .empty { color: var(--muted); font-size: 14px; padding: 4px 0; }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } }
+  .sensrow { display: flex; align-items: center; gap: 10px; }
+  .sensrow select { width: auto; }
+  .ovwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  canvas.ov { display: block; width: 100%; height: auto; }
+  html { background: var(--bg); }
+  th, td { padding: 6px 5px; }
+  td select { width: 4.9em; padding: 4px 2px; }
+  .pill { font-size: 11px; padding: 2px 6px; }
+</style>
+
+
+
+</head><body>
+<main>
+  <header>
+    <h1>OMR Scorer</h1>
+    <p class="sub" id="keyline">Photograph a student's sheet, get the score out of 75.</p>
+  </header>
+
+  <details class="card" id="keyBox">
+    <summary>Answer key <span id="keyState"></span></summary>
+    <label for="keyInput">75 answers, in question order (A, B, C or D)</label>
+    <textarea id="keyInput" rows="8" spellcheck="false" autocapitalize="characters" autocomplete="off"></textarea>
+    <p class="msg" id="keyMsg"></p>
+    <div class="row">
+      <button id="keySave" class="primary">Save key</button>
+      <button id="keyReset">Restore confirmed key</button>
+    </div>
+  </details>
+
+  <section class="card" id="newSheet" aria-labelledby="newTitle">
+    <h2 id="newTitle">Grade a sheet</h2>
+    <div>
+      <label for="name">Student name or roll no.</label>
+      <input type="text" id="name" placeholder="e.g. Aarav, Roll 14" autocomplete="off">
+    </div>
+    <div>
+      <p class="label" style="margin-bottom:6px">Sheet photo</p>
+      <input type="file" id="photos" accept="image/*" hidden>
+      <button id="pick" type="button" style="width:100%">Take or choose photo</button>
+      <p class="msg" style="margin-top:6px" id="photoHint">One photo of the whole sheet, held upright, in bright even light. Keep all five top blocks and the three lower blocks in view. Nothing is uploaded: reading happens on this device.</p>
+    </div>
+    <div class="thumbs" id="thumbs"></div>
+    <div class="row">
+      <button id="grade" class="primary" disabled>Grade sheet</button>
+      <button id="stop" hidden>Stop</button>
+    </div>
+    <p class="msg" id="status" role="status"></p>
+  </section>
+
+  <section class="card" id="result" hidden aria-labelledby="resName"></section>
+
+  <section class="card" id="studentsBox" aria-labelledby="studTitle">
+    <h2 id="studTitle">Scored students</h2>
+    <div class="list" id="studentList"></div>
+    <button id="export" hidden>Download all as CSV</button>
+    <p class="msg">Saved in this browser only. Download the CSV to keep a copy.</p>
+  </section>
+</main>
+<script>
+/* OMR core: finds the bubble grid on a photographed sheet and measures how dark each bubble is.
+   Input: {width, height, data: RGBA bytes}. No DOM, no libraries. Works in Node and in the browser. */
+(function (root) {
+  "use strict";
+
+  // Sheet layout: blocks in reading order, with how many questions each holds.
+  var BLOCKS = [10, 10, 10, 10, 10, 10, 10, 5];
+  var TOTAL = 75;
+
+  function median(a) { var b = a.slice().sort(function (x, y) { return x - y; }); return b.length ? b[b.length >> 1] : 0; }
+  function percentile(a, p) { var b = a.slice().sort(function (x, y) { return x - y; }); return b.length ? b[Math.min(b.length - 1, Math.floor(p * b.length))] : 0; }
+
+  // ---------- 1. gray + red mask ----------
+  function prepare(img) {
+    var w = img.width, h = img.height, d = img.data, n = w * h;
+    var gray = new Float32Array(n), red = new Uint8Array(n);
+    for (var i = 0, p = 0; i < n; i++, p += 4) {
+      var r = d[p], g = d[p + 1], b = d[p + 2];
+      gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+      // teacher's red ticks and crosses: treat as paper, never as shading
+      if (r > 80 && r > 1.35 * g && r > 1.35 * b) red[i] = 1;
+    }
+    return { w: w, h: h, gray: gray, red: red };
+  }
+
+  // ---------- 2. ink mask ----------
+  // paper level = local brightest value (so a dark shadow side still has its own paper level), smoothed.
+  // ink = clearly darker than that paper level.
+  function inkMask(P, rad, ratio) {
+    var w = P.w, h = P.h, gray = P.gray, red = P.red, n = w * h;
+    var redD = new Uint8Array(n); // dilate red by one pixel so the soft edges of ticks are ignored too
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+      if (!red[y * w + x]) continue;
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+        var xx = x + dx, yy = y + dy; if (xx >= 0 && yy >= 0 && xx < w && yy < h) redD[yy * w + xx] = 1;
+      }
+    }
+    var g2 = new Float32Array(n);
+    for (var i = 0; i < n; i++) g2[i] = redD[i] ? 0 : gray[i];
+    // 3x3 average before taking the local maximum, so photo noise does not inflate the paper level
+    var sm = new Float32Array(n);
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+      var t = 0, c = 0;
+      for (dy = -1; dy <= 1; dy++) for (dx = -1; dx <= 1; dx++) {
+        xx = x + dx; yy = y + dy;
+        if (xx >= 0 && yy >= 0 && xx < w && yy < h && !redD[yy * w + xx]) { t += gray[yy * w + xx]; c++; }
+      }
+      sm[y * w + x] = c ? t / c : 0;
+    }
+    g2 = sm;
+    function maxPass(src, horizontal) {
+      var out = new Float32Array(n);
+      var len = horizontal ? w : h, lines = horizontal ? h : w;
+      for (var l = 0; l < lines; l++) for (var p = 0; p < len; p++) {
+        var m = 0, lo = Math.max(0, p - rad), hi = Math.min(len - 1, p + rad);
+        for (var q = lo; q <= hi; q++) { var v = horizontal ? src[l * w + q] : src[q * w + l]; if (v > m) m = v; }
+        if (horizontal) out[l * w + p] = m; else out[p * w + l] = m;
+      }
+      return out;
+    }
+    var mx = maxPass(maxPass(g2, true), false);
+    // smooth the paper level with a box blur (integral image)
+    var W = w + 1, S = new Float64Array(W * (h + 1));
+    for (y = 0; y < h; y++) { var row = 0; for (x = 0; x < w; x++) { row += mx[y * w + x]; S[(y + 1) * W + x + 1] = S[y * W + x + 1] + row; } }
+    var ink = new Uint8Array(n), bgArr = new Float32Array(n), win = rad;
+    for (y = 0; y < h; y++) {
+      var y0 = Math.max(0, y - win), y1 = Math.min(h, y + win + 1);
+      for (x = 0; x < w; x++) {
+        var x0 = Math.max(0, x - win), x1 = Math.min(w, x + win + 1);
+        var bg = (S[y1 * W + x1] - S[y0 * W + x1] - S[y1 * W + x0] + S[y0 * W + x0]) / ((x1 - x0) * (y1 - y0));
+        bgArr[y * w + x] = bg;
+        if (!redD[y * w + x] && gray[y * w + x] < bg * ratio) ink[y * w + x] = 1;
+      }
+    }
+    return { ink: ink, g2: g2, bg: bgArr, redD: redD };
+  }
+
+  // ---------- 3. connected components ----------
+  function components(ink, w, h) {
+    var lab = new Int32Array(w * h), comps = [], stack = new Int32Array(w * h), id = 0;
+    for (var s = 0; s < w * h; s++) {
+      if (!ink[s] || lab[s]) continue;
+      id++; var sp = 0; stack[sp++] = s; lab[s] = id;
+      var minx = w, maxx = 0, miny = h, maxy = 0, area = 0, sx = 0, sy = 0;
+      while (sp) {
+        var q = stack[--sp], qx = q % w, qy = (q / w) | 0;
+        area++; sx += qx; sy += qy;
+        if (qx < minx) minx = qx; if (qx > maxx) maxx = qx; if (qy < miny) miny = qy; if (qy > maxy) maxy = qy;
+        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          var nx = qx + dx, ny = qy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          var ni = ny * w + nx;
+          if (ink[ni] && !lab[ni]) { lab[ni] = id; stack[sp++] = ni; }
+        }
+      }
+      comps.push({ minx: minx, maxx: maxx, miny: miny, maxy: maxy, w: maxx - minx + 1, h: maxy - miny + 1, area: area, cx: sx / area, cy: sy / area });
+    }
+    return comps;
+  }
+
+  // ---------- 4. find bubble-shaped components ----------
+  function bubbleCandidates(comps, ink, W) {
+    var rough = comps.filter(function (c) {
+      var asp = c.w / c.h, fillr = c.area / (c.w * c.h);
+      return c.w >= 7 && c.h >= 7 && c.w <= 60 && c.h <= 60 && asp > 0.78 && asp < 1.28 && fillr > 0.2 && fillr < 0.95;
+    });
+    if (rough.length < 20) return { d: 0, list: [] };
+    // the dominant size = the mode of the diameters (the bubbles outnumber everything else)
+    var sizes = rough.map(function (c) { return Math.max(c.w, c.h); });
+    var best = 0, bestN = 0;
+    for (var s = 7; s <= 60; s++) {
+      var n = sizes.filter(function (v) { return Math.abs(v - s) <= 2; }).length;
+      if (n > bestN) { bestN = n; best = s; }
+    }
+    var near = rough.filter(function (c) { return Math.abs(Math.max(c.w, c.h) - best) <= 3; });
+    var d = median(near.map(function (c) { return Math.max(c.w, c.h); }));
+    // both sides must be near the bubble size, which drops the printed question numbers (narrower than a bubble)
+    // and the shape must be round: ink at the left, right, top and bottom of the box (a tick mark has none of these)
+    function inkNear(x, y) { for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) if (ink[(y + dy) * W + x + dx]) return true; return false; }
+    var list = rough.filter(function (c) {
+      if (!(Math.min(c.w, c.h) >= 0.85 * d && Math.max(c.w, c.h) <= 1.3 * d)) return false;
+      var mx = Math.round((c.minx + c.maxx) / 2), my = Math.round((c.miny + c.maxy) / 2);
+      return inkNear(c.minx + 1, my) && inkNear(c.maxx - 1, my) && inkNear(mx, c.miny + 1) && inkNear(mx, c.maxy - 1);
+    });
+    return { d: d, list: list };
+  }
+
+  // ---------- 5. group bubbles into blocks ----------
+  function cluster(pts, link) {
+    var n = pts.length, parent = [];
+    for (var i = 0; i < n; i++) parent[i] = i;
+    function find(a) { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; }
+    for (i = 0; i < n; i++) for (var j = i + 1; j < n; j++) {
+      var dx = pts[i].cx - pts[j].cx, dy = pts[i].cy - pts[j].cy;
+      if (dx * dx + dy * dy < link * link) parent[find(i)] = find(j);
+    }
+    var groups = {};
+    for (i = 0; i < n; i++) { var r = find(i); (groups[r] = groups[r] || []).push(pts[i]); }
+    return Object.keys(groups).map(function (k) { return groups[k]; });
+  }
+
+  // ---------- 6. fit a regular grid to one block ----------
+  function solve3(A, b) { // least squares for [1,c,r] -> value
+    var M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], v = [0, 0, 0];
+    for (var i = 0; i < A.length; i++) {
+      var a = A[i];
+      for (var r = 0; r < 3; r++) { v[r] += a[r] * b[i]; for (var c = 0; c < 3; c++) M[r][c] += a[r] * a[c]; }
+    }
+    var det = M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+    if (Math.abs(det) < 1e-9) return null;
+    function d3(m) { return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]); }
+    var out = [];
+    for (var k = 0; k < 3; k++) {
+      var T = M.map(function (row, ri) { var rr = row.slice(); rr[k] = v[ri]; return rr; });
+      out.push(d3(T) / det);
+    }
+    return out;
+  }
+
+  function fitBlock(allPts, d, expectRows) {
+    var pts = allPts;
+    // 1-step neighbour vectors give the column direction u (A to B) and row direction v (down one row)
+    var nn = [];
+    pts.forEach(function (p, i) {
+      var best = 1e9;
+      pts.forEach(function (q, j) { if (i !== j) { var dd = Math.hypot(p.cx - q.cx, p.cy - q.cy); if (dd < best) best = dd; } });
+      nn.push(best);
+    });
+    var step = median(nn), us = [], vs = [];
+    for (var i = 0; i < pts.length; i++) for (var j = 0; j < pts.length; j++) {
+      if (i === j) continue;
+      var dx = pts[j].cx - pts[i].cx, dy = pts[j].cy - pts[i].cy, len = Math.hypot(dx, dy);
+      if (len < 0.75 * step || len > 1.3 * step) continue;
+      if (Math.abs(dx) > Math.abs(dy)) { if (dx > 0) us.push([dx, dy]); }
+      else if (dy > 0) vs.push([dx, dy]);
+    }
+    if (us.length < 3 || vs.length < 3) return null;
+    var u = [median(us.map(function (a) { return a[0]; })), median(us.map(function (a) { return a[1]; }))];
+    var v = [median(vs.map(function (a) { return a[0]; })), median(vs.map(function (a) { return a[1]; }))];
+    var det = u[0] * v[1] - u[1] * v[0];
+    if (Math.abs(det) < 1) return null;
+    var ref = pts[0], fx = null, fy = null;
+    function coords(p) {
+      if (!fx) { var qx = p.cx - ref.cx, qy = p.cy - ref.cy; return [(qx * v[1] - qy * v[0]) / det, (u[0] * qy - u[1] * qx) / det]; }
+      var dd = fx[1] * fy[2] - fx[2] * fy[1], ex = p.cx - fx[0], ey = p.cy - fy[0];
+      return [(ex * fy[2] - ey * fx[2]) / dd, (fx[1] * ey - fy[1] * ex) / dd];
+    }
+    function refit(list, idx) {
+      var A = idx.map(function (a) { return [1, a[0], a[1]]; });
+      var nx = solve3(A, list.map(function (p) { return p.cx; })), ny = solve3(A, list.map(function (p) { return p.cy; }));
+      if (!nx || !ny) return false;
+      fx = nx; fy = ny; return true;
+    }
+    function lattice(list) { // integer grid coordinates, shifted so the smallest is 0
+      var idx = list.map(function (p) { var c = coords(p); return [Math.round(c[0]), Math.round(c[1])]; });
+      var minc = Math.min.apply(null, idx.map(function (a) { return a[0]; })), minr = Math.min.apply(null, idx.map(function (a) { return a[1]; }));
+      return idx.map(function (a) { return [a[0] - minc, a[1] - minr]; });
+    }
+    var idx = lattice(pts);
+    if (!refit(pts, idx)) return null;
+    // bring in the four-column and expected-row window that holds the most bubbles, dropping stray marks (ticks, crosses)
+    function bestWindow(vals, len) {
+      var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals), best = lo, bestN = -1;
+      for (var s = lo - 0; s <= Math.max(lo, hi - len + 1); s++) {
+        var n = vals.filter(function (x) { return x >= s && x < s + len; }).length;
+        if (n > bestN) { bestN = n; best = s; }
+      }
+      return best;
+    }
+    for (var iter = 0; iter < 5; iter++) {
+      idx = pts.map(function (p) { var c = coords(p); return [Math.round(c[0]), Math.round(c[1])]; });
+      var c0 = bestWindow(idx.map(function (a) { return a[0]; }), 4), r0 = bestWindow(idx.map(function (a) { return a[1]; }), expectRows);
+      var keepP = [], keepI = [];
+      for (i = 0; i < pts.length; i++) {
+        var a = idx[i], cf = coords(pts[i]);
+        var resid = Math.hypot((cf[0] - a[0]) * step, (cf[1] - a[1]) * step);
+        if (a[0] >= c0 && a[0] < c0 + 4 && a[1] >= r0 && a[1] < r0 + expectRows && (iter < 3 || resid < 0.4 * step)) { keepP.push(pts[i]); keepI.push([a[0] - c0, a[1] - r0]); }
+      }
+      if (keepP.length < 6) return null;
+      // express the fit in window coordinates: shift origin to (c0, r0)
+      var A2 = keepI.map(function (q) { return [1, q[0], q[1]]; });
+      var nx = solve3(A2, keepP.map(function (p) { return p.cx; })), ny = solve3(A2, keepP.map(function (p) { return p.cy; }));
+      if (!nx || !ny) return null;
+      fx = nx; fy = ny; pts = keepP; idx = keepI;
+      // later rounds use the window-origin lattice directly
+      ref = { cx: fx[0], cy: fy[0] };
+      u = [fx[1], fy[1]]; v = [fx[2], fy[2]]; det = u[0] * v[1] - u[1] * v[0];
+      fx = null; fy = null;
+      pts = allPts;
+    }
+    // final fit on the points that agree with the lattice
+    idx = pts.map(function (p) { var c = coords(p); return [Math.round(c[0]), Math.round(c[1])]; });
+    var fin = [], finI = [];
+    for (i = 0; i < pts.length; i++) {
+      var q = idx[i], cc = coords(pts[i]);
+      if (q[0] >= 0 && q[0] < 4 && q[1] >= 0 && q[1] < expectRows && Math.hypot(cc[0] - q[0], cc[1] - q[1]) * step < 0.4 * step) { fin.push(pts[i]); finI.push(q); }
+    }
+    if (fin.length < 6) return null;
+    var Af = finI.map(function (q) { return [1, q[0], q[1]]; });
+    var gx = solve3(Af, fin.map(function (p) { return p.cx; })), gy = solve3(Af, fin.map(function (p) { return p.cy; }));
+    if (!gx || !gy) return null;
+    return { fx: gx, fy: gy, cols: 4, rows: expectRows, found: fin.length, step: step, expectRows: expectRows };
+  }
+
+  // ---------- 7. darkness of one bubble ----------
+  function bubbleScore(P, cx, cy, R, spacing) {
+    var w = P.w, h = P.h, g = P.gray, red = P.red;
+    var ri = 0.58 * R, sum = 0, cnt = 0;
+    for (var y = Math.floor(cy - ri); y <= Math.ceil(cy + ri); y++) for (var x = Math.floor(cx - ri); x <= Math.ceil(cx + ri); x++) {
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > ri * ri) continue;
+      var k = y * w + x;
+      if (red[k]) continue;
+      sum += g[k]; cnt++;
+    }
+    if (cnt < 4) return { score: 0, mean: 255, paper: 255, cnt: cnt };
+    var mean = sum / cnt;
+    // paper level: bright pixels in the neighbourhood (ignores the dark rings and marks)
+    var vals = [], span = spacing * 1.3;
+    for (y = Math.floor(cy - span); y <= cy + span; y += 2) for (x = Math.floor(cx - span); x <= cx + span; x += 2) {
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      k = y * w + x; if (red[k]) continue; vals.push(g[k]);
+    }
+    var paper = percentile(vals, 0.7);
+    return { score: Math.max(0, Math.min(1, (paper - mean) / Math.max(paper, 1))), mean: mean, paper: paper, cnt: cnt };
+  }
+
+  // ---------- 8. whole sheet ----------
+  // Try progressively more sensitive ink thresholds until the whole grid is found (faint print needs the later ones).
+  function analyze(img) {
+    var P = prepare(img), last = null, ratios = [0.9, 0.94, 0.97];
+    for (var i = 0; i < ratios.length; i++) {
+      last = analyzeWith(P, ratios[i]);
+      if (last.ok || last.turned) return last;
+    }
+    return last;
+  }
+  function analyzeWith(P, ratio) {
+    var M = inkMask(P, 11, ratio);
+    var comps = components(M.ink, P.w, P.h);
+    var cand = bubbleCandidates(comps, M.ink, P.w);
+    var out = { ok: false, error: "", d: cand.d, nBubbles: cand.list.length, rows: [], overlay: [], P: P };
+    if (!cand.d || cand.list.length < 100) { out.error = "Could not find the answer bubbles. Retake the photo flat, in good light, with the whole sheet in view."; return out; }
+    var d = cand.d, groups = cluster(cand.list, 2.5 * d).filter(function (g) { return g.length >= 8; });
+    if (groups.length !== BLOCKS.length) { out.error = "Found " + groups.length + " groups of bubbles, expected " + BLOCKS.length + ". Keep the whole sheet in view and the page upright."; out.groups = groups.length; return out; }
+    // reading order: top band (5 blocks) left to right, then bottom band (3 blocks)
+    groups.forEach(function (g) { g.cx = g.reduce(function (s, p) { return s + p.cx; }, 0) / g.length; g.cy = g.reduce(function (s, p) { return s + p.cy; }, 0) / g.length; });
+    var byY = groups.slice().sort(function (a, b) { return a.cy - b.cy; });
+    // the biggest vertical gap must fall after the fifth block (5 blocks on top, 3 below); otherwise the page is turned
+    var gapAt = 0, gapBest = -1;
+    for (var gi = 1; gi < byY.length; gi++) { var gp = byY[gi].cy - byY[gi - 1].cy; if (gp > gapBest) { gapBest = gp; gapAt = gi; } }
+    if (gapAt !== 5) { out.error = "The sheet looks turned. Hold the phone upright so the question blocks read 5 across the top and 3 below."; out.turned = true; return out; }
+    var top = byY.slice(0, 5).sort(function (a, b) { return a.cx - b.cx; });
+    var bot = byY.slice(5).sort(function (a, b) { return a.cx - b.cx; });
+    var ordered = top.concat(bot), q = 0;
+    var R = d / 2, allScores = [];
+    for (var b = 0; b < ordered.length; b++) {
+      var fit = fitBlock(ordered[b], d, BLOCKS[b]);
+      if (!fit) { out.error = "Could not line up the bubbles in block " + (b + 1) + "."; return out; }
+      if (fit.found < 0.5 * 4 * BLOCKS[b]) {
+        out.error = "Only " + fit.found + " of " + (4 * BLOCKS[b]) + " bubbles found in block " + (b + 1) + ". Retake the photo in brighter, even light.";
+        return out;
+      }
+      out.found = (out.found || 0) + fit.found;
+      for (var r = 0; r < fit.rows; r++) {
+        var row = { q: ++q, sc: [], pos: [] };
+        for (var c = 0; c < 4; c++) {
+          var x = fit.fx[0] + fit.fx[1] * c + fit.fx[2] * r, y = fit.fy[0] + fit.fy[1] * c + fit.fy[2] * r;
+          var s = bubbleScore(P, x, y, R, fit.step);
+          row.sc.push(s.score); row.pos.push([x, y]);
+          allScores.push(s.score);
+        }
+        out.rows.push(row);
+      }
+    }
+    out.R = R; out.ok = true;
+    out.baseline = median(allScores);
+    return out;
+  }
+
+  // ---------- 9. decide a row from its four scores ----------
+  // Learn how dark a real mark is on this sheet, so faint pencil still reads, then set the cut-offs from that.
+  function calibrate(rows, sens) {
+    sens = sens || 1;
+    var tops = [];
+    rows.forEach(function (r) { var mn = Math.min.apply(null, r.sc), mx = Math.max.apply(null, r.sc); if (mx - mn >= 0.08) tops.push(mx - mn); });
+    var m = tops.length >= 5 ? median(tops) : 0.5;
+    m = Math.max(0.15, Math.min(0.7, m));
+    return { F: 0.45 * m / sens, E: 0.2 * m / sens, mark: m };
+  }
+  // returns "A".."D", "BLANK", "MULTI" or "CHECK"
+  function decide(scores, th) {
+    var base = Math.min.apply(null, scores);
+    var s = scores.map(function (v) { return v - base; });
+    var order = [0, 1, 2, 3].sort(function (a, b) { return s[b] - s[a]; });
+    var top = s[order[0]], second = s[order[1]];
+    var heavy = scores.filter(function (v) { return v >= th.F; }).length;
+    if (heavy >= 3) return "MULTI";
+    if (top >= th.F) {
+      if (second >= th.F) return "MULTI";
+      if (second >= 0.5 * top || second >= th.E) return "CHECK";
+      return "ABCD".charAt(order[0]);
+    }
+    if (top >= th.E) return "CHECK";
+    return "BLANK";
+  }
+
+  var api = { analyze: analyze, decide: decide, calibrate: calibrate, BLOCKS: BLOCKS, TOTAL: TOTAL, _prepare: prepare, _i: { cluster: cluster, fitBlock: fitBlock, inkMask: inkMask, components: components, bubbleCandidates: bubbleCandidates } };
+  if (typeof module !== "undefined" && module.exports) module.exports = api; else root.OMR = api;
+})(typeof window !== "undefined" ? window : this);
+
+</script>
+<script>
+(function () {
+  var N = 75;
+  var KEY_DEFAULT = "DBBBBBBBDC" + "DAABCBABBB" + "BCBBBBDBBB" + "BBBBBABABB" + "ABCABBABBB" + "BBBBBBABCB" + "CBCACABDAB" + "CCACC";
+  var CODES = ["A", "B", "C", "D", "BLANK", "MULTI", "CHECK"];
+  var LABEL = { A: "A", B: "B", C: "C", D: "D", BLANK: "Unattempted", MULTI: "Invalid", CHECK: "Check" };
+  var SENS = [["Stricter", 0.7], ["Normal", 1], ["Faint pencil", 1.6]];
+
+  function $(id) { return document.getElementById(id); }
+  function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} return null; }
+  function h(tag, attrs, kids) {
+    var e = document.createElement(tag);
+    if (attrs) for (var k in attrs) {
+      if (k === "text") e.textContent = attrs[k];
+      else if (k === "on") for (var ev in attrs.on) e.addEventListener(ev, attrs.on[ev]);
+      else if (k in e) { try { e[k] = attrs[k]; } catch (x) { e.setAttribute(k, attrs[k]); } }
+      else e.setAttribute(k, attrs[k]);
+    }
+    (kids || []).forEach(function (c) { if (c) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return e;
+  }
+
+  function parseKey(s) { var m = String(s || "").toUpperCase().match(/[ABCD]/g); return m && m.length === N ? m : null; }
+  var keyArr = parseKey(store("omr2.key")) || parseKey(KEY_DEFAULT);
+  var students = [];
+  try {
+    var raw = JSON.parse(store("omr2.students") || "[]");
+    if (Array.isArray(raw)) students = raw.filter(function (s) { return s && Array.isArray(s.sc) && s.sc.length === N; });
+  } catch (e) {}
+  var selectedId = students.length ? students[0].id : null;
+  var filter = "all", file = null, busy = false;
+  var overlays = {}; // id -> {canvas, pos, R}  (this visit only)
+
+  function saveStudents() { store("omr2.students", JSON.stringify(students)); }
+
+  // answers for a student = manual fix if set, else what the bubble darkness says
+  function answersOf(s) {
+    var th = OMR.calibrate(s.sc.map(function (r) { return { sc: r }; }), s.sens || 1);
+    return s.sc.map(function (r, i) { return s.over && s.over[i + 1] ? s.over[i + 1] : OMR.decide(r, th); });
+  }
+  function gradeRow(i, code) {
+    var key = keyArr[i];
+    if (code === "BLANK") return { status: "Unattempted", tone: "idle", marks: 0 };
+    if (code === "MULTI") return { status: "Invalid", tone: "idle", marks: 0 };
+    if (code === "CHECK") return { status: "Check Manually", tone: "warn", marks: 0 };
+    return code === key ? { status: "Correct", tone: "ok", marks: 1 } : { status: "Wrong", tone: "bad", marks: 0 };
+  }
+  function gradeStudent(s) {
+    var c = { Correct: 0, Wrong: 0, Unattempted: 0, Invalid: 0, "Check Manually": 0 };
+    var rows = answersOf(s).map(function (a, i) {
+      var g = gradeRow(i, a); c[g.status]++;
+      return { q: i + 1, key: keyArr[i], ans: a, status: g.status, tone: g.tone, marks: g.marks };
+    });
+    return { rows: rows, counts: c, total: c.Correct };
+  }
+
+  // ---- answer key ----
+  function formatKey(arr) { var o = []; for (var i = 0; i < arr.length; i += 10) o.push(arr.slice(i, i + 10).join("")); return o.join("\n"); }
+  function renderKey() {
+    $("keyInput").value = formatKey(keyArr);
+    $("keyState").textContent = N + " questions loaded";
+    $("keyline").textContent = "Key loaded for " + N + " questions. Scoring is +1 per correct answer.";
+    $("keyMsg").textContent = "Q1 to Q10 are the first line, Q11 to Q20 the second, and so on.";
+    $("keyMsg").className = "msg";
+  }
+  $("keySave").addEventListener("click", function () {
+    var k = parseKey($("keyInput").value);
+    if (!k) {
+      var n = (($("keyInput").value.toUpperCase().match(/[ABCD]/g)) || []).length;
+      $("keyMsg").textContent = "Found " + n + " answers, need exactly " + N + ". Use only A, B, C or D.";
+      $("keyMsg").className = "msg err"; return;
+    }
+    keyArr = k; store("omr2.key", k.join("")); renderKey();
+    $("keyMsg").textContent = "Key saved. Scores below use the new key.";
+    renderResult(); renderStudents();
+  });
+  $("keyReset").addEventListener("click", function () {
+    keyArr = parseKey(KEY_DEFAULT); store("omr2.key", keyArr.join("")); renderKey(); renderResult(); renderStudents();
+  });
+
+  // ---- photo ----
+  var thumbUrl = null;
+  function renderPhoto() {
+    if (thumbUrl) { URL.revokeObjectURL(thumbUrl); thumbUrl = null; }
+    var box = $("thumbs"); box.textContent = "";
+    if (file) {
+      thumbUrl = URL.createObjectURL(file);
+      box.appendChild(h("div", { className: "thumb" }, [
+        h("img", { src: thumbUrl, alt: "Sheet photo" }),
+        h("button", { type: "button", text: "×", "aria-label": "Remove photo", on: { click: function () { file = null; renderPhoto(); } } })
+      ]));
+    }
+    $("grade").disabled = !file || busy;
+    $("pick").textContent = file ? "Choose a different photo" : "Take or choose photo";
+  }
+  $("pick").addEventListener("click", function () { $("photos").click(); });
+  $("photos").addEventListener("change", function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (f) { file = f; setStatus(""); }
+    e.target.value = ""; renderPhoto();
+  });
+  function setStatus(t, err, spin) {
+    var s = $("status"); s.textContent = "";
+    if (spin) s.appendChild(h("span", { className: "spin" }));
+    s.appendChild(document.createTextNode(t || ""));
+    s.className = "msg" + (err ? " err" : "");
+  }
+  function tick() { return new Promise(function (r) { setTimeout(r, 30); }); }
+
+  async function loadCanvas(f, maxSide) {
+    var bmp;
+    try { bmp = await createImageBitmap(f, { imageOrientation: "from-image" }); }
+    catch (e) { bmp = await createImageBitmap(f); }
+    var sc = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    var cv = document.createElement("canvas");
+    cv.width = Math.round(bmp.width * sc); cv.height = Math.round(bmp.height * sc);
+    cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+    if (bmp.close) bmp.close();
+    return cv;
+  }
+  function rotated(cv, quarter) {
+    if (!quarter) return cv;
+    var o = document.createElement("canvas"), swap = quarter % 2 === 1;
+    o.width = swap ? cv.height : cv.width; o.height = swap ? cv.width : cv.height;
+    var g = o.getContext("2d");
+    g.translate(o.width / 2, o.height / 2); g.rotate(quarter * Math.PI / 2);
+    g.drawImage(cv, -cv.width / 2, -cv.height / 2);
+    return o;
+  }
+  function imageData(cv) { return cv.getContext("2d").getImageData(0, 0, cv.width, cv.height); }
+
+  $("grade").addEventListener("click", async function () {
+    if (!file || busy) return;
+    busy = true; $("grade").disabled = true;
+    setStatus("Reading the sheet. This takes a few seconds.", false, true);
+    try {
+      await tick();
+      var base = await loadCanvas(file, 1600), res = null, cv = null, firstErr = "";
+      for (var q = 0; q < 4 && !(res && res.ok); q++) {
+        cv = rotated(base, q);
+        res = OMR.analyze(imageData(cv));
+        if (q === 0) firstErr = res.error || "";
+        await tick();
+      }
+      if (!res || !res.ok) { setStatus(firstErr || "Could not read the sheet. Retake the photo flat, in even light, with all of it in view.", true); return; }
+      var s = {
+        id: Date.now(), name: $("name").value.trim() || "Student " + (students.length + 1),
+        sc: res.rows.map(function (r) { return r.sc.map(function (v) { return Math.round(v * 100) / 100; }); }),
+        sens: 1, over: {}, at: new Date().toISOString()
+      };
+      overlays[s.id] = { canvas: cv, pos: res.rows.map(function (r) { return r.pos; }), R: res.R };
+      students.unshift(s); selectedId = s.id; filter = "all"; saveStudents();
+      file = null; $("name").value = "";
+      var g = gradeStudent(s);
+      setStatus("Done. " + (g.counts["Check Manually"] + g.counts.Invalid) + " row(s) need a look.");
+      renderResult(); renderStudents();
+      $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e) {
+      setStatus("Something went wrong reading this photo. Try again, or retake it.", true);
+    } finally { busy = false; renderPhoto(); }
+  });
+
+  // ---- result ----
+  function current() { return students.filter(function (s) { return s.id === selectedId; })[0] || null; }
+  function drawOverlay(s, g) {
+    var ov = overlays[s.id];
+    if (!ov) return null;
+    var cv = document.createElement("canvas");
+    cv.width = ov.canvas.width; cv.height = ov.canvas.height;
+    cv.className = "ov";
+    var c = cv.getContext("2d");
+    c.drawImage(ov.canvas, 0, 0);
+    c.lineWidth = Math.max(2, ov.R * 0.28);
+    g.rows.forEach(function (r, i) {
+      var li = "ABCD".indexOf(r.ans);
+      var col = r.tone === "ok" ? "#1faa59" : r.tone === "bad" ? "#e5322d" : r.status === "Unattempted" ? null : "#f59e0b";
+      if (!col) return;
+      (li >= 0 ? [li] : [0, 1, 2, 3]).forEach(function (k) {
+        var p = ov.pos[i][k]; c.strokeStyle = col; c.beginPath(); c.arc(p[0], p[1], ov.R + 2, 0, 6.2832); c.stroke();
+      });
+    });
+    return cv;
+  }
+  function renderResult() {
+    var box = $("result"), s = current();
+    box.textContent = "";
+    if (!s) { box.hidden = true; return; }
+    box.hidden = false;
+    var g = gradeStudent(s);
+    box.appendChild(h("h2", { id: "resName", text: s.name }));
+    box.appendChild(h("div", { className: "score" }, [h("strong", { text: String(g.total) }), h("span", { text: "/ " + N })]));
+    var defs = [
+      ["all", "All", N, "all"], ["Correct", "Correct", g.counts.Correct, "ok"], ["Wrong", "Wrong", g.counts.Wrong, "bad"],
+      ["Unattempted", "Unattempted", g.counts.Unattempted, "idle"], ["Invalid", "Invalid", g.counts.Invalid, "idle"],
+      ["Check Manually", "Check Manually", g.counts["Check Manually"], "warn"]
+    ];
+    box.appendChild(h("div", { className: "chips", role: "group", "aria-label": "Filter rows by status" }, defs.map(function (d) {
+      return h("button", { type: "button", className: "chip " + d[3], "aria-pressed": String(filter === d[0]),
+        on: { click: function () { filter = filter === d[0] ? "all" : d[0]; renderResult(); } } }, [d[1], h("b", { text: String(d[2]) })]);
+    })));
+    var sel = h("select", { id: "sens", "aria-label": "Reading sensitivity" });
+    SENS.forEach(function (o) { sel.appendChild(h("option", { value: String(o[1]), text: o[0], selected: (s.sens || 1) === o[1] })); });
+    sel.addEventListener("change", function () { s.sens = Number(sel.value); saveStudents(); renderResult(); renderStudents(); });
+    box.appendChild(h("div", { className: "sensrow" }, [h("label", { htmlFor: "sens", text: "Pencil darkness" }), sel]));
+    var ovc = drawOverlay(s, g);
+    if (ovc) {
+      box.appendChild(h("p", { className: "msg", text: "Photo check. Green = correct, red = wrong, amber = needs a look." }));
+      box.appendChild(h("div", { className: "ovwrap" }, [ovc]));
+    }
+    if (g.counts["Check Manually"] + g.counts.Invalid) box.appendChild(h("p", { className: "msg", text: "Amber or Invalid rows were faint or doubled. Look at the paper sheet and set the answer in the Student column, or change Pencil darkness." }));
+    var tbody = h("tbody");
+    g.rows.forEach(function (r) {
+      if (filter !== "all" && r.status !== filter) return;
+      var se = h("select", { "aria-label": "Student answer for question " + r.q });
+      CODES.forEach(function (c) { se.appendChild(h("option", { value: c, text: LABEL[c], selected: c === r.ans })); });
+      se.addEventListener("change", function () { s.over = s.over || {}; s.over[r.q] = se.value; saveStudents(); renderResult(); renderStudents(); });
+      tbody.appendChild(h("tr", { className: r.status === "Check Manually" ? "s-check" : "" }, [
+        h("td", { className: "num", text: String(r.q) }), h("td", { className: "mono", text: r.key }),
+        h("td", null, [se]), h("td", null, [h("span", { className: "pill " + r.tone, text: r.status })]),
+        h("td", { className: "num", text: String(r.marks) })
+      ]));
+    });
+    if (!tbody.children.length) tbody.appendChild(h("tr", null, [h("td", { colSpan: 5, text: "No rows with this status." })]));
+    var table = h("table", null, [
+      h("thead", null, [h("tr", null, ["Q.No", "Key", "Student", "Status", "Marks"].map(function (t, i) { return h("th", { text: t, className: i === 0 || i === 4 ? "num" : "" }); }))]),
+      tbody
+    ]);
+    box.appendChild(h("div", { className: "tablewrap" }, [table]));
+    box.appendChild(h("p", { className: "msg", text: "Correct " + g.counts.Correct + " | Wrong " + g.counts.Wrong + " | Unattempted " + g.counts.Unattempted + " | Invalid " + g.counts.Invalid + " | Check Manually " + g.counts["Check Manually"] + " | Total " + g.total + "/" + N }));
+  }
+
+  // ---- students ----
+  function renderStudents() {
+    var list = $("studentList"); list.textContent = "";
+    if (!students.length) { list.appendChild(h("p", { className: "empty", text: "No sheets scored yet. Add a photo above and tap Grade sheet." })); $("export").hidden = true; return; }
+    students.forEach(function (s) {
+      var g = gradeStudent(s), armed = false, timer = null;
+      var del = h("button", { type: "button", className: "del", text: "Delete", "aria-label": "Delete " + s.name });
+      del.addEventListener("click", function () {
+        if (!armed) { armed = true; del.textContent = "Tap again"; timer = setTimeout(function () { armed = false; del.textContent = "Delete"; }, 3000); return; }
+        clearTimeout(timer);
+        students = students.filter(function (x) { return x.id !== s.id; }); delete overlays[s.id];
+        if (selectedId === s.id) selectedId = students.length ? students[0].id : null;
+        saveStudents(); renderResult(); renderStudents();
+      });
+      var open = h("button", { type: "button", className: "open", on: { click: function () { selectedId = s.id; filter = "all"; renderResult(); renderStudents(); $("result").scrollIntoView({ behavior: "smooth", block: "start" }); } } }, [
+        h("span", { text: s.name }),
+        h("span", { className: "msg", text: g.total + "/" + N + (g.counts["Check Manually"] + g.counts.Invalid ? " · " + (g.counts["Check Manually"] + g.counts.Invalid) + " to check" : "") })
+      ]);
+      if (s.id === selectedId) open.setAttribute("aria-current", "true");
+      list.appendChild(h("div", { className: "student" }, [open, del]));
+    });
+    $("export").hidden = false;
+  }
+  function csvCell(v) { v = String(v); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; }
+  $("export").addEventListener("click", function () {
+    var head = ["Name", "Correct", "Wrong", "Unattempted", "Invalid", "Check Manually", "Score", "Out of"];
+    for (var i = 1; i <= N; i++) head.push("Q" + i);
+    var lines = [head.map(csvCell).join(",")];
+    students.slice().reverse().forEach(function (s) {
+      var g = gradeStudent(s), c = g.counts;
+      var row = [s.name, c.Correct, c.Wrong, c.Unattempted, c.Invalid, c["Check Manually"], g.total, N];
+      g.rows.forEach(function (r) { row.push(LABEL[r.ans]); });
+      lines.push(row.map(csvCell).join(","));
+    });
+    var url = URL.createObjectURL(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv" }));
+    var a = h("a", { href: url, download: "omr-scores.csv" });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 3000);
+  });
+
+  renderKey(); renderPhoto(); renderResult(); renderStudents();
+})();
+</script>
+</body></html>
