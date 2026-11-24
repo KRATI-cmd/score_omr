@@ -136,15 +136,16 @@
 
   <section class="card" id="newSheet" aria-labelledby="newTitle">
     <h2 id="newTitle">Grade a sheet</h2>
-    <div>
+    <div id="nameRow">
       <label for="name">Student name or roll no.</label>
       <input type="text" id="name" placeholder="e.g. Aarav, Roll 14" autocomplete="off">
     </div>
     <div>
       <p class="label" style="margin-bottom:6px">Sheet photo</p>
-      <input type="file" id="photos" accept="image/*" hidden>
-      <button id="pick" type="button" style="width:100%">Take or choose photo</button>
-      <p class="msg" style="margin-top:6px" id="photoHint">One photo of the whole sheet, held upright, in bright even light. Keep all five top blocks and the three lower blocks in view. Nothing is uploaded: reading happens on this device.</p>
+      <input type="file" id="photos" accept="image/*" multiple hidden>
+      <input type="file" id="camera" accept="image/*" capture="environment" hidden>
+      <div class="row"><button id="cam" type="button">Take photo</button><button id="pick" type="button">Upload photos</button></div>
+      <p class="msg" style="margin-top:6px" id="photoHint">Take a photo, or upload one or more from your gallery. Each photo should show the whole sheet, held upright, in bright even light. Keep all five top blocks and the three lower blocks in view. Nothing is uploaded: reading happens on this device.</p>
     </div>
     <div class="thumbs" id="thumbs"></div>
     <div class="row">
@@ -547,7 +548,7 @@
     if (Array.isArray(raw)) students = raw.filter(function (s) { return s && Array.isArray(s.sc) && s.sc.length === N; });
   } catch (e) {}
   var selectedId = students.length ? students[0].id : null;
-  var filter = "all", file = null, busy = false;
+  var filter = "all", files = [], busy = false;
   var overlays = {}; // id -> {canvas, pos, R}  (this visit only)
 
   function saveStudents() { store("omr2.students", JSON.stringify(students)); }
@@ -598,26 +599,30 @@
   });
 
   // ---- photo ----
-  var thumbUrl = null;
+  var thumbUrls = [];
   function renderPhoto() {
-    if (thumbUrl) { URL.revokeObjectURL(thumbUrl); thumbUrl = null; }
+    thumbUrls.forEach(function (u) { URL.revokeObjectURL(u); }); thumbUrls = [];
     var box = $("thumbs"); box.textContent = "";
-    if (file) {
-      thumbUrl = URL.createObjectURL(file);
+    files.forEach(function (f, i) {
+      var url = URL.createObjectURL(f); thumbUrls.push(url);
       box.appendChild(h("div", { className: "thumb" }, [
-        h("img", { src: thumbUrl, alt: "Sheet photo" }),
-        h("button", { type: "button", text: "×", "aria-label": "Remove photo", on: { click: function () { file = null; renderPhoto(); } } })
+        h("img", { src: url, alt: "Sheet photo " + (i + 1) }),
+        h("button", { type: "button", text: "×", "aria-label": "Remove photo " + (i + 1), on: { click: function () { files.splice(i, 1); renderPhoto(); } } })
       ]));
-    }
-    $("grade").disabled = !file || busy;
-    $("pick").textContent = file ? "Choose a different photo" : "Take or choose photo";
+    });
+    $("grade").disabled = !files.length || busy;
+    $("grade").textContent = files.length > 1 ? "Grade " + files.length + " sheets" : "Grade sheet";
+    $("nameRow").hidden = files.length > 1;
   }
+  function addFiles(list) {
+    var picked = Array.prototype.slice.call(list || []).filter(function (f) { return /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic)$/i.test(f.name); });
+    if (picked.length) { files = files.concat(picked); setStatus(""); }
+    renderPhoto();
+  }
+  $("cam").addEventListener("click", function () { $("camera").click(); });
   $("pick").addEventListener("click", function () { $("photos").click(); });
-  $("photos").addEventListener("change", function (e) {
-    var f = e.target.files && e.target.files[0];
-    if (f) { file = f; setStatus(""); }
-    e.target.value = ""; renderPhoto();
-  });
+  $("camera").addEventListener("change", function (e) { addFiles(e.target.files); e.target.value = ""; });
+  $("photos").addEventListener("change", function (e) { addFiles(e.target.files); e.target.value = ""; });
   function setStatus(t, err, spin) {
     var s = $("status"); s.textContent = "";
     if (spin) s.appendChild(h("span", { className: "spin" }));
@@ -649,33 +654,43 @@
   function imageData(cv) { return cv.getContext("2d").getImageData(0, 0, cv.width, cv.height); }
 
   $("grade").addEventListener("click", async function () {
-    if (!file || busy) return;
+    if (!files.length || busy) return;
     busy = true; $("grade").disabled = true;
-    setStatus("Reading the sheet. This takes a few seconds.", false, true);
+    var queue = files.slice(), failed = [], done = 0, lastId = null, uid = Date.now();
     try {
-      await tick();
-      var base = await loadCanvas(file, 1600), res = null, cv = null, firstErr = "";
-      for (var q = 0; q < 4 && !(res && res.ok); q++) {
-        cv = rotated(base, q);
-        res = OMR.analyze(imageData(cv));
-        if (q === 0) firstErr = res.error || "";
+      for (var n = 0; n < queue.length; n++) {
+        var f = queue[n];
+        setStatus(queue.length > 1 ? "Reading sheet " + (n + 1) + " of " + queue.length + "." : "Reading the sheet. This takes a few seconds.", false, true);
         await tick();
+        var label = queue.length === 1 ? $("name").value.trim() : "";
+        if (!label && queue.length > 1) label = String(f.name || "").replace(/\.[^.]+$/, "");
+        if (!label) label = "Student " + (students.length + 1);
+        try {
+          var base = await loadCanvas(f, 1600), res = null, cv = null, firstErr = "";
+          for (var q = 0; q < 4 && !(res && res.ok); q++) {
+            cv = rotated(base, q);
+            res = OMR.analyze(imageData(cv));
+            if (q === 0) firstErr = res.error || "";
+            await tick();
+          }
+          if (!res || !res.ok) { failed.push(label + ": " + (firstErr || "could not read the sheet")); continue; }
+          var s = {
+            id: uid++, name: label,
+            sc: res.rows.map(function (r) { return r.sc.map(function (v) { return Math.round(v * 100) / 100; }); }),
+            sens: 1, over: {}, at: new Date().toISOString()
+          };
+          overlays[s.id] = { canvas: cv, pos: res.rows.map(function (r) { return r.pos; }), R: res.R };
+          students.unshift(s); lastId = s.id; done++;
+          saveStudents();
+        } catch (e) { failed.push(label + ": could not open this photo"); }
       }
-      if (!res || !res.ok) { setStatus(firstErr || "Could not read the sheet. Retake the photo flat, in even light, with all of it in view.", true); return; }
-      var s = {
-        id: Date.now(), name: $("name").value.trim() || "Student " + (students.length + 1),
-        sc: res.rows.map(function (r) { return r.sc.map(function (v) { return Math.round(v * 100) / 100; }); }),
-        sens: 1, over: {}, at: new Date().toISOString()
-      };
-      overlays[s.id] = { canvas: cv, pos: res.rows.map(function (r) { return r.pos; }), R: res.R };
-      students.unshift(s); selectedId = s.id; filter = "all"; saveStudents();
-      file = null; $("name").value = "";
-      var g = gradeStudent(s);
-      setStatus("Done. " + (g.counts["Check Manually"] + g.counts.Invalid) + " row(s) need a look.");
+      files = []; $("name").value = "";
+      if (lastId !== null) { selectedId = lastId; filter = "all"; }
+      var msg = done ? "Done. " + done + " sheet(s) graded." : "";
+      if (failed.length) msg += (msg ? " " : "") + "Could not read: " + failed.join(" | ");
+      setStatus(msg || "Nothing was graded.", !done || failed.length > 0);
       renderResult(); renderStudents();
-      $("result").scrollIntoView({ behavior: "smooth", block: "start" });
-    } catch (e) {
-      setStatus("Something went wrong reading this photo. Try again, or retake it.", true);
+      if (lastId !== null) $("result").scrollIntoView({ behavior: "smooth", block: "start" });
     } finally { busy = false; renderPhoto(); }
   });
 
