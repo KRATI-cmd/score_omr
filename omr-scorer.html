@@ -140,6 +140,8 @@
   <section class="card" id="newSheet" aria-labelledby="newTitle">
     <h2 id="newTitle">Grade a sheet</h2>
     <p class="msg">Name, course and section are read from the top of the sheet photo. You can correct them after grading.</p>
+    <label for="keyChoice">Answer key for these sheets</label>
+    <select id="keyChoice"></select>
     <div>
       <p class="label" style="margin-bottom:6px">Sheet photo</p>
       <input type="file" id="photos" accept="image/*" multiple hidden>
@@ -568,6 +570,8 @@
   var BBA_KEY = "BBBBDBCBCA" + "CDBCACBBBA" + "CBABB" + "CBBBBBBBBB" + "BBBCBACDBA" + "BBBAA" + "BCCABBABBC" + "BBBBBACBCB" + "CAABA";
   if (!store("omr2.bbaSeeded") && !courseKeys.BBA) { courseKeys.BBA = parseKey(BBA_KEY); store("omr2.bbaSeeded", "1"); }
   function keyFor(s) {
+    if (s.keyName === "__default") return keyArr;
+    if (s.keyName && courseKeys[s.keyName]) return courseKeys[s.keyName];
     var sc = normC(s.course), best = null;
     Object.keys(courseKeys).forEach(function (c) { var n = normC(c); if (sc && sc.indexOf(n) >= 0 && (!best || n.length > normC(best).length)) best = c; });
     return best ? courseKeys[best] : keyArr;
@@ -596,6 +600,11 @@
     $("keyInput").value = formatKey(cn && courseKeys[cn] ? courseKeys[cn] : keyArr);
     var dl = $("keyCourses"); dl.textContent = "";
     Object.keys(courseKeys).forEach(function (c) { dl.appendChild(h("option", { value: c })); });
+    var kc = $("keyChoice"), cur = kc.value; kc.textContent = "";
+    kc.appendChild(h("option", { value: "", text: "Auto (match the course on the sheet)" }));
+    Object.keys(courseKeys).forEach(function (c) { kc.appendChild(h("option", { value: c, text: "Always use " + c + " key" })); });
+    kc.appendChild(h("option", { value: "__default", text: "Always use the default key" }));
+    kc.value = cur;
     $("keyState").textContent = N + " questions loaded" + (Object.keys(courseKeys).length ? " + keys for " + Object.keys(courseKeys).join(", ") : "");
     $("keyline").textContent = "Key loaded for " + N + " questions. Scoring is +1 per correct answer.";
     $("keyMsg").textContent = "Q1 to Q10 are the first line, Q11 to Q20 the second, and so on.";
@@ -655,14 +664,36 @@
   function cleanField(v) { return String(v || "").replace(/[^A-Za-z0-9 .\-\/&]/g, " ").replace(/\s+/g, " ").trim(); }
   function parseHeader(text) {
     var out = { name: "", course: "", section: "" };
+    function dots(v) { return cleanField(String(v).replace(/[._]{2,}/g, " ").replace(/^[\s.:_\-]+|[\s.:_\-]+$/g, "")); }
     String(text || "").split(/\r?\n/).forEach(function (line) {
       var m;
-      if (!out.name && (m = line.match(/(?:student\s*)?name\s*[:\-.]*\s*(.+)/i))) out.name = cleanField(m[1]);
+      // "Course/Section ....... B.B.A - C"  ->  course BBA, section C
+      if (!out.course && (m = line.match(/course\s*[\/\\]\s*sec\w*\s*[:\-._\s]*(.+)/i))) {
+        var v = dots(m[1]).replace(/\b([A-Za-z])\.(?=[A-Za-z]\b)/g, "$1").replace(/\./g, "");
+        var p = v.match(/^(.*?)[\s\-\/,]+([A-Za-z0-9]{1,2})$/);
+        if (p) { out.course = p[1].replace(/[\s\-]+$/, ""); out.section = p[2].toUpperCase(); } else out.course = v;
+        return;
+      }
+      if (!out.name && (m = line.match(/^\W*(?:student\s*)?name\s*[:\-._\s]*(.+)/i))) out.name = dots(m[1]);
       if (!out.course && (m = line.match(/(?:course|class|branch|subject)\s*[:\-.]*\s*(.+?)(?:\s+(?:section|sec)\b.*)?$/i))) out.course = cleanField(m[1]);
       if (!out.section && (m = line.match(/(?:section|sec)\s*[:\-.]*\s*([A-Za-z0-9\-]{1,8})/i))) out.section = cleanField(m[1]).toUpperCase();
       if (!out.name && (m = line.match(/roll\s*(?:no\.?|number)?\s*[:\-.]*\s*([A-Za-z0-9\-]+)/i))) out.name = "Roll " + cleanField(m[1]);
     });
-    if (out.name.length < 2) out.name = "";
+    // sanity checks: handwriting OCR is noisy, so keep only values that look plausible
+    var all = String(text || ""), known = /(B\.?B\.?A|B\.?C\.?A|B\.?COM|M\.?B\.?A|B\.?SC)/i;
+    var nm = out.name, letters = (nm.match(/[A-Za-z]/g) || []).length;
+    if (letters < 3 || letters < 0.8 * nm.length || /shift|section|date|room|subject|course/i.test(nm)) out.name = "";
+    else out.name = nm.replace(/\s+/g, " ").trim().toUpperCase();
+    var cm = out.course.replace(/[^A-Za-z]/g, "").match(known);
+    var cn = Object.keys(courseKeys).filter(function (c) { return normC(out.course).indexOf(normC(c)) >= 0; })[0];
+    if (cm) out.course = cm[1].replace(/\./g, "").toUpperCase();
+    else if (cn) out.course = cn;
+    else {
+      out.course = ""; out.section = "";
+      var fm = all.match(/\b(B\.?B\.?A|B\.?C\.?A|B\.?COM|M\.?B\.?A)\b(?:\s*[-–]\s*([A-Za-z])\b)?/i);
+      if (fm) { out.course = fm[1].replace(/\./g, "").toUpperCase(); if (fm[2]) out.section = fm[2].toUpperCase(); }
+    }
+    if (!/^[A-Za-z0-9]{1,2}$/.test(out.section)) out.section = "";
     return out;
   }
   async function readHeader(cv, res) {
@@ -673,8 +704,10 @@
       if (!(hh > 40)) return null;
       if (!(await loadOcr())) return null;
       var crop = document.createElement("canvas");
-      crop.width = cv.width; crop.height = hh;
-      crop.getContext("2d").drawImage(cv, 0, 0, cv.width, hh, 0, 0, cv.width, hh);
+      crop.width = cv.width * 2; crop.height = hh * 2;
+      var cx = crop.getContext("2d");
+      try { cx.filter = "grayscale(1) contrast(1.8)"; } catch (e) {}
+      cx.drawImage(cv, 0, 0, cv.width, hh, 0, 0, crop.width, crop.height);
       var r = await window.Tesseract.recognize(crop, "eng");
       return parseHeader(r && r.data && r.data.text);
     } catch (e) { return null; }
@@ -741,7 +774,7 @@
           await tick();
           var hd = await readHeader(cv, res) || { name: "", course: "", section: "" };
           var s = {
-            id: uid++, name: hd.name || label, course: hd.course, section: hd.section,
+            id: uid++, name: hd.name || label, course: hd.course, section: hd.section, keyName: $("keyChoice").value,
             sc: res.rows.map(function (r) { return r.sc.map(function (v) { return Math.round(v * 100) / 100; }); }),
             sens: 1, over: {}, at: new Date().toISOString()
           };
@@ -753,6 +786,8 @@
       files = [];
       if (lastId !== null) { selectedId = lastId; filter = "all"; }
       var msg = done ? "Done. " + done + " sheet(s) graded." : "";
+      var noCourse = students.slice(0, done).filter(function (x) { return !x.course && !x.keyName; }).length;
+      if (noCourse) msg += " Course not detected on " + noCourse + " sheet(s), so the default key was used. Set Course (or Answer key used) on the result card.";
       if (failed.length) msg += (msg ? " " : "") + "Could not read: " + failed.join(" | ");
       setStatus(msg || "Nothing was graded.", !done || failed.length > 0);
       renderResult(); renderStudents();
@@ -800,6 +835,12 @@
     box.appendChild(field("Name", "name", "Name"));
     box.appendChild(field("Course", "course", "Course"));
     box.appendChild(field("Section", "section", "Section"));
+    var ksel = h("select", { "aria-label": "Answer key" }, [h("option", { value: "", text: "Auto (from course)" })]
+      .concat(Object.keys(courseKeys).map(function (c) { return h("option", { value: c, text: c + " key" }); }))
+      .concat([h("option", { value: "__default", text: "Default key" })]));
+    ksel.value = s.keyName || "";
+    ksel.addEventListener("change", function () { s.keyName = ksel.value; saveStudents(); renderResult(); renderStudents(); });
+    box.appendChild(h("div", null, [h("label", { text: "Answer key used" }), ksel]));
     box.appendChild(h("div", { className: "score" }, [h("strong", { text: String(g.total) }), h("span", { text: "/ " + N })]));
     var defs = [
       ["all", "All", N, "all"], ["Correct", "Correct", g.counts.Correct, "ok"], ["Wrong", "Wrong", g.counts.Wrong, "bad"],
