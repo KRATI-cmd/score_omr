@@ -125,6 +125,9 @@
 
   <details class="card" id="keyBox">
     <summary>Answer key <span id="keyState"></span></summary>
+    <label for="keyCourse">Course this key is for (leave empty for the default key, e.g. type BBA)</label>
+    <input type="text" id="keyCourse" list="keyCourses" placeholder="Default key" autocomplete="off">
+    <datalist id="keyCourses"></datalist>
     <label for="keyInput">75 answers, in question order (A, B, C or D)</label>
     <textarea id="keyInput" rows="8" spellcheck="false" autocapitalize="characters" autocomplete="off"></textarea>
     <p class="msg" id="keyMsg"></p>
@@ -136,10 +139,7 @@
 
   <section class="card" id="newSheet" aria-labelledby="newTitle">
     <h2 id="newTitle">Grade a sheet</h2>
-    <div id="nameRow">
-      <label for="name">Student name or roll no.</label>
-      <input type="text" id="name" placeholder="e.g. Aarav, Roll 14" autocomplete="off">
-    </div>
+    <p class="msg">Name, course and section are read from the top of the sheet photo. You can correct them after grading.</p>
     <div>
       <p class="label" style="margin-bottom:6px">Sheet photo</p>
       <input type="file" id="photos" accept="image/*" multiple hidden>
@@ -156,6 +156,8 @@
   </section>
 
   <section class="card" id="result" hidden aria-labelledby="resName"></section>
+
+  <section class="card" id="summary" hidden></section>
 
   <section class="card" id="studentsBox" aria-labelledby="studTitle">
     <h2 id="studTitle">Scored students</h2>
@@ -558,8 +560,20 @@
     var th = OMR.calibrate(s.sc.map(function (r) { return { sc: r }; }), s.sens || 1);
     return s.sc.map(function (r, i) { return s.over && s.over[i + 1] ? s.over[i + 1] : OMR.decide(r, th); });
   }
-  function gradeRow(i, code) {
-    var key = keyArr[i];
+  // per-course answer keys: a student gets the key whose course name appears in their course
+  function normC(v) { return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+  var courseKeys = {};
+  try { var ck = JSON.parse(store("omr2.keys") || "{}"); Object.keys(ck).forEach(function (c) { var k = parseKey(ck[c]); if (normC(c) && k) courseKeys[c] = k; }); } catch (e) {}
+  // BBA 1st Sem key, read from the teacher's marked sheet (added once; you can edit it in the Answer key box)
+  var BBA_KEY = "BBBBDBCBCA" + "CDBCACBBBA" + "CBABB" + "CBBBBBBBBB" + "BBBCBACDBA" + "BBBAA" + "BCCABBABBC" + "BBBBBACBCB" + "CAABA";
+  if (!store("omr2.bbaSeeded") && !courseKeys.BBA) { courseKeys.BBA = parseKey(BBA_KEY); store("omr2.bbaSeeded", "1"); }
+  function keyFor(s) {
+    var sc = normC(s.course), best = null;
+    Object.keys(courseKeys).forEach(function (c) { var n = normC(c); if (sc && sc.indexOf(n) >= 0 && (!best || n.length > normC(best).length)) best = c; });
+    return best ? courseKeys[best] : keyArr;
+  }
+  function saveCourseKeys() { var o = {}; Object.keys(courseKeys).forEach(function (c) { o[c] = courseKeys[c].join(""); }); store("omr2.keys", JSON.stringify(o)); }
+  function gradeRow(key, code) {
     if (code === "BLANK") return { status: "Unattempted", tone: "idle", marks: 0 };
     if (code === "MULTI") return { status: "Invalid", tone: "idle", marks: 0 };
     if (code === "CHECK") return { status: "Check Manually", tone: "warn", marks: 0 };
@@ -567,9 +581,10 @@
   }
   function gradeStudent(s) {
     var c = { Correct: 0, Wrong: 0, Unattempted: 0, Invalid: 0, "Check Manually": 0 };
+    var ks = keyFor(s);
     var rows = answersOf(s).map(function (a, i) {
-      var g = gradeRow(i, a); c[g.status]++;
-      return { q: i + 1, key: keyArr[i], ans: a, status: g.status, tone: g.tone, marks: g.marks };
+      var g = gradeRow(ks[i], a); c[g.status]++;
+      return { q: i + 1, key: ks[i], ans: a, status: g.status, tone: g.tone, marks: g.marks };
     });
     return { rows: rows, counts: c, total: c.Correct };
   }
@@ -577,8 +592,11 @@
   // ---- answer key ----
   function formatKey(arr) { var o = []; for (var i = 0; i < arr.length; i += 10) o.push(arr.slice(i, i + 10).join("")); return o.join("\n"); }
   function renderKey() {
-    $("keyInput").value = formatKey(keyArr);
-    $("keyState").textContent = N + " questions loaded";
+    var cn = $("keyCourse").value.trim();
+    $("keyInput").value = formatKey(cn && courseKeys[cn] ? courseKeys[cn] : keyArr);
+    var dl = $("keyCourses"); dl.textContent = "";
+    Object.keys(courseKeys).forEach(function (c) { dl.appendChild(h("option", { value: c })); });
+    $("keyState").textContent = N + " questions loaded" + (Object.keys(courseKeys).length ? " + keys for " + Object.keys(courseKeys).join(", ") : "");
     $("keyline").textContent = "Key loaded for " + N + " questions. Scoring is +1 per correct answer.";
     $("keyMsg").textContent = "Q1 to Q10 are the first line, Q11 to Q20 the second, and so on.";
     $("keyMsg").className = "msg";
@@ -590,12 +608,21 @@
       $("keyMsg").textContent = "Found " + n + " answers, need exactly " + N + ". Use only A, B, C or D.";
       $("keyMsg").className = "msg err"; return;
     }
-    keyArr = k; store("omr2.key", k.join("")); renderKey();
-    $("keyMsg").textContent = "Key saved. Scores below use the new key.";
+    var cn = $("keyCourse").value.trim();
+    if (cn) { courseKeys[cn] = k; saveCourseKeys(); } else { keyArr = k; store("omr2.key", k.join("")); }
+    renderKey();
+    $("keyMsg").textContent = (cn ? "Key saved for " + cn + ". Sheets whose course contains \"" + cn + "\" use it." : "Default key saved.") + " Scores below are updated.";
     renderResult(); renderStudents();
   });
+  $("keyCourse").addEventListener("input", function () {
+    var cn = $("keyCourse").value.trim();
+    $("keyInput").value = formatKey(cn && courseKeys[cn] ? courseKeys[cn] : (cn ? [] : keyArr));
+  });
   $("keyReset").addEventListener("click", function () {
-    keyArr = parseKey(KEY_DEFAULT); store("omr2.key", keyArr.join("")); renderKey(); renderResult(); renderStudents();
+    var cn = $("keyCourse").value.trim();
+    if (cn) { delete courseKeys[cn]; saveCourseKeys(); }
+    else { keyArr = parseKey(KEY_DEFAULT); store("omr2.key", keyArr.join("")); }
+    renderKey(); renderResult(); renderStudents();
   });
 
   // ---- photo ----
@@ -612,7 +639,45 @@
     });
     $("grade").disabled = !files.length || busy;
     $("grade").textContent = files.length > 1 ? "Grade " + files.length + " sheets" : "Grade sheet";
-    $("nameRow").hidden = files.length > 1;
+  }
+  // ---- read name / course / section from the sheet header (on-device OCR) ----
+  var ocrLoading = null;
+  function loadOcr() {
+    if (window.Tesseract) return Promise.resolve(true);
+    if (!ocrLoading) ocrLoading = new Promise(function (resolve) {
+      var sc = document.createElement("script");
+      sc.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+      sc.onload = function () { resolve(!!window.Tesseract); }; sc.onerror = function () { resolve(false); };
+      document.head.appendChild(sc);
+    });
+    return ocrLoading;
+  }
+  function cleanField(v) { return String(v || "").replace(/[^A-Za-z0-9 .\-\/&]/g, " ").replace(/\s+/g, " ").trim(); }
+  function parseHeader(text) {
+    var out = { name: "", course: "", section: "" };
+    String(text || "").split(/\r?\n/).forEach(function (line) {
+      var m;
+      if (!out.name && (m = line.match(/(?:student\s*)?name\s*[:\-.]*\s*(.+)/i))) out.name = cleanField(m[1]);
+      if (!out.course && (m = line.match(/(?:course|class|branch|subject)\s*[:\-.]*\s*(.+?)(?:\s+(?:section|sec)\b.*)?$/i))) out.course = cleanField(m[1]);
+      if (!out.section && (m = line.match(/(?:section|sec)\s*[:\-.]*\s*([A-Za-z0-9\-]{1,8})/i))) out.section = cleanField(m[1]).toUpperCase();
+      if (!out.name && (m = line.match(/roll\s*(?:no\.?|number)?\s*[:\-.]*\s*([A-Za-z0-9\-]+)/i))) out.name = "Roll " + cleanField(m[1]);
+    });
+    if (out.name.length < 2) out.name = "";
+    return out;
+  }
+  async function readHeader(cv, res) {
+    try {
+      var minY = Infinity;
+      res.rows.forEach(function (r) { r.pos.forEach(function (p) { if (p[1] < minY) minY = p[1]; }); });
+      var hh = Math.floor(minY - 2.5 * res.R);
+      if (!(hh > 40)) return null;
+      if (!(await loadOcr())) return null;
+      var crop = document.createElement("canvas");
+      crop.width = cv.width; crop.height = hh;
+      crop.getContext("2d").drawImage(cv, 0, 0, cv.width, hh, 0, 0, cv.width, hh);
+      var r = await window.Tesseract.recognize(crop, "eng");
+      return parseHeader(r && r.data && r.data.text);
+    } catch (e) { return null; }
   }
   function addFiles(list) {
     var picked = Array.prototype.slice.call(list || []).filter(function (f) { return /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic)$/i.test(f.name); });
@@ -662,9 +727,7 @@
         var f = queue[n];
         setStatus(queue.length > 1 ? "Reading sheet " + (n + 1) + " of " + queue.length + "." : "Reading the sheet. This takes a few seconds.", false, true);
         await tick();
-        var label = queue.length === 1 ? $("name").value.trim() : "";
-        if (!label && queue.length > 1) label = String(f.name || "").replace(/\.[^.]+$/, "");
-        if (!label) label = "Student " + (students.length + 1);
+        var label = String(f.name || "").replace(/\.[^.]+$/, "") || "Student " + (students.length + 1);
         try {
           var base = await loadCanvas(f, 1600), res = null, cv = null, firstErr = "";
           for (var q = 0; q < 4 && !(res && res.ok); q++) {
@@ -674,8 +737,11 @@
             await tick();
           }
           if (!res || !res.ok) { failed.push(label + ": " + (firstErr || "could not read the sheet")); continue; }
+          setStatus("Reading name, course and section from the sheet.", false, true);
+          await tick();
+          var hd = await readHeader(cv, res) || { name: "", course: "", section: "" };
           var s = {
-            id: uid++, name: label,
+            id: uid++, name: hd.name || label, course: hd.course, section: hd.section,
             sc: res.rows.map(function (r) { return r.sc.map(function (v) { return Math.round(v * 100) / 100; }); }),
             sens: 1, over: {}, at: new Date().toISOString()
           };
@@ -684,7 +750,7 @@
           saveStudents();
         } catch (e) { failed.push(label + ": could not open this photo"); }
       }
-      files = []; $("name").value = "";
+      files = [];
       if (lastId !== null) { selectedId = lastId; filter = "all"; }
       var msg = done ? "Done. " + done + " sheet(s) graded." : "";
       if (failed.length) msg += (msg ? " " : "") + "Could not read: " + failed.join(" | ");
@@ -722,6 +788,18 @@
     box.hidden = false;
     var g = gradeStudent(s);
     box.appendChild(h("h2", { id: "resName", text: s.name }));
+    function field(label, key, ph) {
+      var inp = h("input", { type: "text", value: s[key] || "", placeholder: ph, autocomplete: "off", "aria-label": label });
+      inp.addEventListener("change", function () {
+        s[key] = inp.value.trim(); if (key === "name" && !s.name) s.name = "Student";
+        saveStudents(); renderStudents(); renderSummary();
+        if (key === "name") $("resName").textContent = s.name;
+      });
+      return h("div", null, [h("label", { text: label }), inp]);
+    }
+    box.appendChild(field("Name", "name", "Name"));
+    box.appendChild(field("Course", "course", "Course"));
+    box.appendChild(field("Section", "section", "Section"));
     box.appendChild(h("div", { className: "score" }, [h("strong", { text: String(g.total) }), h("span", { text: "/ " + N })]));
     var defs = [
       ["all", "All", N, "all"], ["Correct", "Correct", g.counts.Correct, "ok"], ["Wrong", "Wrong", g.counts.Wrong, "bad"],
@@ -765,6 +843,7 @@
 
   // ---- students ----
   function renderStudents() {
+    renderSummary();
     var list = $("studentList"); list.textContent = "";
     if (!students.length) { list.appendChild(h("p", { className: "empty", text: "No sheets scored yet. Add a photo above and tap Grade sheet." })); $("export").hidden = true; return; }
     students.forEach(function (s) {
@@ -786,14 +865,49 @@
     });
     $("export").hidden = false;
   }
+  function renderSummary() {
+    var box = $("summary"); box.textContent = "";
+    if (!students.length) { box.hidden = true; return; }
+    box.hidden = false;
+    var groups = {}, order = [];
+    students.forEach(function (s) {
+      var c = s.course || "Unknown course", sec = s.section || "-", k = c + "\u0000" + sec;
+      if (!groups[k]) { groups[k] = { course: c, section: sec, scores: [] }; order.push(k); }
+      var t = gradeStudent(s).total;
+      groups[k].scores.push(t); (groups[k].list = groups[k].list || []).push({ name: s.name, total: t });
+    });
+    order.sort(function (a, b) { return a < b ? -1 : 1; });
+    box.appendChild(h("h2", { text: "Summary by course and section" }));
+    var rows = order.map(function (k) {
+      var g = groups[k], sc = g.scores, sum = sc.reduce(function (a, b) { return a + b; }, 0);
+      return h("tr", null, [h("td", { text: g.course }), h("td", { text: g.section }), h("td", { className: "num", text: String(sc.length) }),
+        h("td", { className: "num", text: (sum / sc.length).toFixed(1) }), h("td", { className: "num", text: String(Math.max.apply(null, sc)) }), h("td", { className: "num", text: String(Math.min.apply(null, sc)) })]);
+    });
+    box.appendChild(h("div", { className: "tablewrap" }, [h("table", null, [
+      h("thead", null, [h("tr", null, ["Course", "Section", "Students", "Average", "Highest", "Lowest"].map(function (t, i) { return h("th", { text: t, className: i > 1 ? "num" : "" }); }))]),
+      h("tbody", null, rows)])]));
+    // section-wise detail: every student in the section, ranked by score
+    order.forEach(function (k) {
+      var g = groups[k], list = g.list.slice().sort(function (a, b) { return b.total - a.total; });
+      var trs = list.map(function (x, i) {
+        return h("tr", null, [h("td", { className: "num", text: String(i + 1) }), h("td", { text: x.name }), h("td", { className: "num", text: x.total + " / " + N })]);
+      });
+      box.appendChild(h("details", { style: "margin-top:10px" }, [
+        h("summary", { text: g.course + " - Section " + g.section + " (" + list.length + " students)" }),
+        h("div", { className: "tablewrap" }, [h("table", null, [
+          h("thead", null, [h("tr", null, ["Rank", "Name", "Score"].map(function (t, i) { return h("th", { text: t, className: i !== 1 ? "num" : "" }); }))]),
+          h("tbody", null, trs)])])
+      ]));
+    });
+  }
   function csvCell(v) { v = String(v); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; }
   $("export").addEventListener("click", function () {
-    var head = ["Name", "Correct", "Wrong", "Unattempted", "Invalid", "Check Manually", "Score", "Out of"];
+    var head = ["Name", "Course", "Section", "Correct", "Wrong", "Unattempted", "Invalid", "Check Manually", "Score", "Out of"];
     for (var i = 1; i <= N; i++) head.push("Q" + i);
     var lines = [head.map(csvCell).join(",")];
     students.slice().reverse().forEach(function (s) {
       var g = gradeStudent(s), c = g.counts;
-      var row = [s.name, c.Correct, c.Wrong, c.Unattempted, c.Invalid, c["Check Manually"], g.total, N];
+      var row = [s.name, s.course || "", s.section || "", c.Correct, c.Wrong, c.Unattempted, c.Invalid, c["Check Manually"], g.total, N];
       g.rows.forEach(function (r) { row.push(LABEL[r.ans]); });
       lines.push(row.map(csvCell).join(","));
     });
@@ -803,6 +917,7 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 3000);
   });
 
+  saveCourseKeys();
   renderKey(); renderPhoto(); renderResult(); renderStudents();
 })();
 </script>
